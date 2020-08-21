@@ -1,0 +1,977 @@
+
+	include "nesdefs.dasm"
+        ;include "nesppu.dasm"
+SpriteLength         = #$04
+ActorLength 	     = #$0a
+
+
+ActorHeaderSize      = #$08
+;sprite header address offsets 
+ActorDataLength      = $00
+ActorOAMAddress      = $01
+ActorAnimationFrame  = $02
+ActorPositionX       = $03
+ActorPositionY       = $04
+ActorMetaSprite      = $05
+ActorHDirection      = $07
+ActorXVBlankWaits    = $08
+ActorYVBlankWaits    = $09
+
+AnimationDataLength  = #$00
+AnimationDataVBlanks = #$01
+AnimationHeaderSize  = #$02
+
+MetaSpriteDataLength = $00
+MetaSpriteHeaderSize = #$01
+
+OAMSpriteY           = #$00
+OAMSpriteTile        = #$01
+OAMSpriteAttribute   = #$02
+OAMSpriteX           = #$03
+SkipScroll           = #$01
+ScrollForward        = #$00
+MaxXPosition         = #$e0
+MinXPosition         = #$18
+MaxYPosition         = #$c7
+MinYPosition         = #$14
+BounceY              = %00000010
+BounceX              = %00000001
+DirectionRight       = %00000000
+DirectionLeft        = %00000001
+MaxSpeed             = #$3a
+
+
+;;;;; VARIABLES
+
+	seg.u ZEROPAGE
+	org $0
+NMICounterByte	    .byte
+BUTTONSTATUS	    .byte
+WalkTargetX         .byte
+WalkTargetY         .byte
+ScrollState         .byte
+ScrollPos	    .word
+TempWord            .word
+TempWord2           .word
+TempByte            .byte
+TempByte2           .byte
+ByteArg1            .byte
+ByteArg2            .byte
+ArgWord1            .Word
+ArgWord2            .Word
+WordReturn          .word
+PlayerAnim          .word
+PlayerAnimFrame     .byte
+PlayerDirection     .byte
+LastPlayerDirection .byte
+PlayerTileSet       .word
+PlayerAnimation     .word
+
+Cursor: 
+	.byte ;#$04 ;number of bytes for data
+        .byte ;#$00 ;beginning of address in OAM RAM
+        .byte ;#$00 ;current animation frame
+        .byte ;CursorXPosition ;current X position
+        .byte ;CursorYPosition ;current Y position
+        .word ;Cursor_MetaSpriteData
+	.byte ;#DirectionRight
+        .byte ;$00 ;X vblank waits (movement speed below 1)
+        .byte ;$00 ;y vblank waits (movement speed below 1)
+        
+Player: ;Label for the actor definition
+	.byte; #$18 ;no longer used
+        .byte; #$04 ;index of OAM where actor's sprites will live
+        .byte; PlayerXPosition ;current X position
+        .byte; PlayerYPosition ;current Y position        
+        .byte; #$70 ;current animation frame
+        .word; PlayerRightMetaSpriteData ;pointer to current metasprite
+	.byte; #DirectionRight
+        .byte; $00 ;X vblank waits (movement speed below 1)
+        .byte; $03 ;y vblank waits (movement speed below 1)
+
+;;;;; NES CARTRIDGE HEADER
+
+	NES_HEADER 0,2,1,0 ; mapper 0, 2 PRGs, 1 CHR, horiz. mirror
+
+;;;;; START OF CODE
+
+Start:
+; wait for PPU warmup; clear CPU RAM
+	NES_INIT	; set up stack pointer, turn off PPU
+        jsr WaitSync	; wait for VSYNC
+        jsr WaitSync
+        jsr ClearRAM	; clear RAM
+        jsr WaitSync
+; set palette and nametable VRAM
+	jsr SetPalette	; set palette colors
+        jsr FillVRAM	; print message in name table
+        jsr WaitSync
+; reset PPU address and scroll registers
+
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+       	
+        lda #<Cursor_Actor_Data
+        sta ArgWord2
+        lda #>Cursor_Actor_Data
+        sta ArgWord2+1
+        
+       	;jmp .testSkip
+        jsr InitSprites
+          
+        lda PlayerIdle
+        sta PlayerAnimation
+        lda PlayerIdle+1
+        sta PlayerAnimation+1
+        
+        lda #<Player_Actor_Data
+        sta ArgWord2
+        lda #>Player_Actor_Data
+        sta ArgWord2+1
+        
+        
+        lda #<Player
+  	sta ArgWord1
+        lda #>Player
+	sta ArgWord1+1
+        
+	jsr InitSprites
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        jsr GetSpriteLocation
+        lda WordReturn
+	;adc -#$06
+        sta WalkTargetX
+        lda WordReturn+1
+        clc
+        ;adc -#$14
+        sta WalkTargetY
+        
+;.testSkip
+        
+        lda #0
+        sta PPU_ADDR
+        sta PPU_ADDR	; PPU addr = $0000
+        sta PPU_SCROLL
+        sta PPU_SCROLL  ; PPU scroll = $0000
+; activate PPU graphics
+        lda #MASK_BG|MASK_SPRITE
+        sta PPU_MASK 	; enable rendering
+        lda #CTRL_NMI
+        sta PPU_CTRL	; enable NMI
+        
+        lda #SkipScroll
+        sta ScrollState
+        
+        
+.endless
+	jmp .endless	; endless loop
+; set palette colors
+SetPalette: subroutine
+; set PPU address to palette start
+	PPU_SETADDR $3f00
+        ldy #$00
+.loop:
+	lda Palette,y	; lookup byte in ROM
+	sta PPU_DATA	; store byte to PPU data
+        iny
+        cpy #$20; Y = Y + 1	; is Y equal to 32?
+	bne .loop	; not yet, loop
+        rts		; return to caller     
+        
+InitSprites: subroutine
+	;lda ;ArgWord1 ;sprite pointer set before calling
+        ;lda ;ArgWord1+1
+        ;argword2 - pointer to actor's data in rom
+        
+        
+        ldy #$00       
+.loadActor
+        
+	lda (ArgWord2),y
+        sta (ArgWord1),y
+        iny
+ 	cpy #ActorLength
+        bne .loadActor
+
+
+        
+	ldx #MetaSpriteHeaderSize
+        lda #<OAM_RAM
+        ldy #ActorOAMAddress 
+	clc
+        adc (ArgWord1),y ;look up the memory address the sprite wants to live in
+        sta TempWord ;oam ram address to store
+        lda #>OAM_RAM
+        sta TempWord+1
+        
+        ldy #ActorMetaSprite
+        lda (ArgWord1),y
+        sta TempWord2
+        iny
+        lda (ArgWord1),y
+        sta TempWord2+1
+        
+        ldy #MetaSpriteDataLength
+        lda (TempWord2),y ;add the length of the sprite to the counter
+        clc
+        adc TempWord ;add the address of the sprite to the counter
+        sta TempByte ;tracks length of metapsrite
+        
+.nextSprite:   
+	txa
+        tay
+        lda (TempWord2),y ;at this point, A has desired X position of sprite tile
+        clc
+        ldy #ActorPositionX
+        adc (ArgWord1),y
+        ldy #OAMSpriteX        
+        sta (TempWord),y
+       
+        inx
+        txa 
+        tay
+        lda (TempWord2),y 
+        clc
+        ldy #ActorPositionY
+        adc (ArgWord1),y
+        ldy #OAMSpriteY        
+        sta (TempWord),y
+        
+        inx 
+        txa 
+        tay
+        lda (TempWord2),y
+        ldy #OAMSpriteTile
+        sta (TempWord),y
+        
+        inx
+        txa
+        tay
+        lda (TempWord2),y
+        ldy #OAMSpriteAttribute
+        sta (TempWord),y
+        clc
+        lda TempWord
+        adc #SpriteLength
+        sta TempWord
+        inx
+        cmp TempByte; check if all sprites have been loaded into memory at the address
+        bne .nextSprite  
+        rts
+        
+        
+SetMetaSpriteDirection: subroutine
+        ;ArgWord1 - actor refrence
+        ;ArgWord2 - Metasprite list reference
+	;rts ;DON'T FORGET
+        
+        ldy #ActorMetaSprite
+        lda (ArgWord1),y
+        sta TempWord2
+        iny
+        lda (ArgWord1),y
+        sta TempWord2+1 ;tempword has pointer to metasprite table 
+        
+	lda #$00
+ 
+	ldx #MetaSpriteHeaderSize
+        lda #<OAM_RAM
+        ldy #ActorOAMAddress 
+	clc    
+        adc (ArgWord1),y ;look up the memory address the sprite lives in      
+        sta TempWord ;oam ram address to store
+        lda #>OAM_RAM
+        sta TempWord+1
+        
+        ldy #MetaSpriteDataLength
+        lda (TempWord2),y ;add the length of the sprite to the counter
+        clc
+        adc TempWord ;add the address of the sprite to the counter
+        sta TempByte ;tracks length of metapsrite     
+        
+        
+        ldy #ActorHDirection
+        lda (ArgWord1),y       
+        CMP #DirectionLeft
+        BNE .setLeft
+        
+	ldy #00
+        lda (ArgWord2),y
+        ldy #ActorMetaSprite
+        sta (ArgWord1),y
+        
+        ldy #01
+        lda (ArgWord2),y
+        ldy #ActorMetaSprite
+        iny
+        sta (ArgWord1),y
+
+        jmp .nextSprite
+        
+.setLeft
+	ldy #02
+        lda (ArgWord2),y
+        ldy #ActorMetaSprite
+        sta (ArgWord1),y
+        
+        ldy #03
+        lda (ArgWord2),y
+        ldy #ActorMetaSprite
+        iny
+        sta (ArgWord1),y
+
+        
+.nextSprite: 
+	;jmp .done
+	inx    
+        inx
+        inx
+        
+        txa
+        tay
+        lda (TempWord2),y
+        ldy #OAMSpriteAttribute
+        sta (TempWord),y
+        
+        
+        clc
+        lda TempWord
+        adc #SpriteLength
+        sta TempWord
+        inx
+        cmp TempByte   
+        bne .nextSprite  
+.done        
+        rts     
+        
+        
+; fill video RAM
+
+FillVRAM: subroutine
+	PPU_SETADDR $2000
+        lda #<testMap
+        sta TempWord
+        lda #>testMap
+        sta TempWord+1
+	ldx #$4
+        ldy #0
+.loop:
+	lda (TempWord),y
+	sta PPU_DATA
+        iny
+	bne .loop
+        inc TempWord+1
+	dex
+	bne .loop
+        rts   
+        
+HandleInput: subroutine
+	;returns a 2D vector. First byte is X, second byte is Y
+        
+	lda #$00
+        sta WordReturn
+        sta WordReturn+1
+;checkA
+
+	lda BUTTONSTATUS
+        and #ABUTTON
+        beq .checkB
+        ;set the word argument to the cursor's sprite pointer
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        jsr GetSpriteLocation
+        lda WordReturn
+	;adc -#$06
+        sta WalkTargetX
+        lda WordReturn+1
+        clc
+        ;adc -#$14
+        sta WalkTargetY
+        lda #$00
+        sta WordReturn
+        sta WordReturn+1 ;clear return variable 
+        
+.checkB
+
+.checkSelect
+
+.checkStart
+        
+.checkUp
+	lda BUTTONSTATUS
+	and #UPBUTTON  
+        beq .checkDown
+	lda -#$01
+        sta WordReturn+1
+        jmp .checkLeft
+.checkDown
+	lda BUTTONSTATUS
+        and #DOWNBUTTON  
+        beq .checkLeft
+        lda #$01
+        sta WordReturn+1
+.checkLeft
+	lda BUTTONSTATUS
+        and #LEFTBUTTON
+        beq .checkRight
+        lda -#$01
+        sta WordReturn        
+        jmp .done
+.checkRight
+	lda BUTTONSTATUS
+        and #RIGHTBUTTON
+        beq .done
+        lda #$01
+        sta WordReturn   
+.done	
+	rts
+
+GetVectorToWalkTarget: subroutine
+	;ArgWord1 - a sprite pointer
+        ;WordReturn - a 2D vector that moves the sprite towards the target
+        ;argword should automaticaly get passed down
+          
+	jsr GetSpriteLocation
+        
+        lda #$00
+        sta TempWord
+        sta TempWord+1
+        
+        lda WordReturn
+        cmp WalkTargetX
+        beq .checkY
+        bcc .XisLess
+        lda -#$01
+        sta TempWord
+        ldy #ActorHDirection
+        lda #DirectionRight
+        sta (ArgWord1),y
+        jmp .checkY       
+.XisLess
+        lda #$01
+        sta TempWord
+        ldy #ActorHDirection
+        lda #DirectionLeft
+        sta (ArgWord1),y
+.checkY
+	lda WordReturn+1
+        cmp WalkTargetY
+        beq .doneSettingVector
+        bcc .YisLess
+        lda -#$01
+        sta TempWord+1
+        jmp .doneSettingVector
+.YisLess
+	lda #$01
+        sta TempWord+1
+.doneSettingVector
+
+	lda TempWord
+	sta WordReturn
+        lda TempWord+1
+        sta WordReturn+1
+        
+        lda WordReturn
+        ora WordReturn+1
+        bne .walking
+        lda #<PlayerIdle
+        sta PlayerAnimation
+        lda #>PlayerIdle
+        sta PlayerAnimation+1
+        jmp .done
+.walking
+	lda #<PlayerWalk
+        sta PlayerAnimation
+        lda #>PlayerWalk
+        sta PlayerAnimation+1
+.done        
+	rts
+
+GetSpriteLocation: subroutine
+	;ArgWord1 - Sprite pointer
+	;returns a 2D vector of a sprite's location. Low byte is X, high byte is Y
+        
+        ldx #ActorHeaderSize        
+        ldy #ActorOAMAddress 
+        
+        ldy #ActorPositionX
+        lda (ArgWord1),y
+        sta WordReturn
+        
+        ldy #ActorPositionY
+        lda (ArgWord1),y
+        sta WordReturn+1
+       
+        rts
+        
+MoveSprites: subroutine
+	;rts ;test
+	;ArgWord1 - Sprite pointer
+        ;ByteArg1 - X delta
+        ;ByteArg2 - Y delta
+        
+        ldy #ActorMetaSprite
+        lda (ArgWord1),y ;get a pointer to the metasprite for the actor
+        sta TempWord2
+        iny
+        lda (ArgWord1),y
+        sta TempWord2+1
+        
+	lda #$00
+        
+	ldx #MetaSpriteHeaderSize
+        lda #<OAM_RAM
+        ldy #ActorOAMAddress 
+	clc
+        adc (ArgWord1),y ;look up the memory address the sprite wants to live in
+        sta TempWord ;oam ram address to store
+        lda #>OAM_RAM
+        sta TempWord+1
+        
+
+        
+        ldy #MetaSpriteDataLength
+        lda (ArgWord1),y ;add the length of the sprite to the counter
+        clc
+        adc TempWord ;add the address of the sprite to the counter
+        sta TempByte ;tracks length of metapsrite  
+ 
+
+ 	
+
+        ldy #ActorXVBlankWaits
+        lda (ArgWord1),y
+        bne .applyXVBlankWaits
+        
+        ldy #ActorPositionX ;target position for whole metasprite gets added
+        lda (ArgWord1),y
+        clc 
+        adc ByteArg1
+        sta (ArgWord1),y
+        jmp .doneCheckingXWait
+        
+.applyXVBlankWaits        
+        lda NMICounterByte
+        and #%00001111  ;knock off the highest nybble so the mod is faster
+	sec  		;but this does mean a max vblank wait of 15 on animations
+.Xmod        
+        ldy #ActorXVBlankWaits
+        sbc (ArgWord1),y
+	bcs .Xmod
+        
+        
+        adc (ArgWord1),y
+
+        bne .doneCheckingXWait
+        
+        ldy #ActorPositionX ;target position for whole metasprite gets added
+        lda (ArgWord1),y
+        clc 
+        adc ByteArg1
+        sta (ArgWord1),y
+        jmp .doneCheckingXWait
+        
+        
+        
+.doneCheckingXWait   
+
+
+        ldy #ActorYVBlankWaits
+        lda (ArgWord1),y
+        bne .applyYVBlankWaits
+        
+        ldy #ActorPositionY ;target position for whole metasprite gets added
+        lda (ArgWord1),y
+        clc 
+        adc ByteArg2
+        sta (ArgWord1),y
+        jmp .doneCheckingYWait
+
+.applyYVBlankWaits
+
+        lda NMICounterByte
+        and #%00001111  ;knock off the highest nybble so the mod is faster
+	sec  		;but this does mean a max vblank wait of 15 on animations
+.Ymod        
+        ldy #ActorYVBlankWaits
+        sbc (ArgWord1),y
+	bcs .Ymod
+        
+        
+        adc (ArgWord1),y
+
+        bne .doneCheckingYWait
+        
+
+        ldy #ActorPositionY
+        lda (ArgWord1),y
+        clc 
+        adc ByteArg2
+	sta (ArgWord1),y
+.doneCheckingYWait   
+        
+.nextSprite:
+	txa
+        tay
+        lda (TempWord2),y ;at this point, A has desired X position of sprite tile
+        
+        ldy #ActorPositionX ;target position for whole metasprite gets added
+        clc
+        adc (ArgWord1),y ;add the actor position to the sprite tile offset
+        ldy #OAMSpriteX        
+        sta (TempWord),y ;store in the OAM location to set tile's X position
+       
+        inx
+        txa 
+        tay
+        lda (TempWord2),y 
+        ldy #ActorPositionY
+        clc
+        adc (ArgWord1),y       
+        ldy #OAMSpriteY        
+        sta (TempWord),y
+        
+        inx 
+	inx
+        
+        clc
+        lda TempWord
+        adc #SpriteLength
+        sta TempWord
+        inx
+        cmp TempByte    
+        bne .nextSprite  
+        
+
+.done
+        rts
+
+
+AnimateSprites: subroutine
+        ;rts ;TEST
+	ldx #ActorHeaderSize
+        lda #<OAM_RAM
+        ldy #ActorOAMAddress 
+	clc    
+        adc (ArgWord1),y ;look up the memory address the sprite lives in      
+        sta TempWord ;oam ram address to store
+        lda #>OAM_RAM
+        sta TempWord+1
+        
+        ldy #MetaSpriteDataLength
+        lda (ArgWord1),y ;add the length of the sprite to the counter
+        clc
+        adc TempWord ;add the address of the sprite to the counter
+        sta TempByte ;tracks length of metapsrite           
+	
+        ;jmp .done
+        
+        
+        ldy #ActorAnimationFrame ;load number of the current frame of animation for this sprite
+	lda (ArgWord1),y ;dereference pointer to animation frame
+	
+        ldy #AnimationDataLength
+        cmp (ArgWord2),y; compare to animation length
+        bcc .skipAnimWrap
+        lda #$00
+        ldy #ActorAnimationFrame   
+        sta (ArgWord1),y
+.skipAnimWrap
+        
+        ldy #ActorAnimationFrame
+	lda (ArgWord1),y
+	sta ByteArg1
+	jsr GetAnimationFrameByIndex
+        	
+	ldx #00
+.nextSprite:     
+
+        txa
+        inx
+        tay
+        lda (WordReturn),y
+
+
+        
+        ldy #OAMSpriteTile
+        sta (TempWord),y
+        
+        
+        clc
+        lda TempWord
+        adc #SpriteLength
+        sta TempWord
+        cmp TempByte    
+        bne .nextSprite 
+        
+;advance animation frames
+        
+        lda NMICounterByte
+        and #%00001111  ;knock off the highest nybble so the mod is faster
+	sec  		;but this does mean a max vblank wait of 15 on animations
+.mod        
+        ldy #AnimationDataVBlanks
+        sbc (ArgWord2),y
+	bcs .mod
+        
+        
+        adc (ArgWord2),y
+
+        bne .done
+        
+        ldy #ActorAnimationFrame       
+      	lda (ArgWord1),y
+        
+        
+        clc
+        adc #$01
+        sta (ArgWord1),y
+.done        
+	rts
+        
+GetAnimationFrameByIndex: subroutine
+	;ArgWord2 animation
+        ;ByteArg1 frame
+        
+        lda ByteArg1
+        clc
+        asl
+        adc #AnimationHeaderSize
+        tay
+        lda (ArgWord2),y
+       	sta WordReturn
+        iny
+        lda (ArgWord2),y
+        sta WordReturn+1        
+	rts
+;;;;; COMMON SUBROUTINES
+
+	include "nesppu.dasm"
+        
+ReadJoypad0: subroutine
+	LDA #$01
+	STA JOYPAD1
+	STA BUTTONSTATUS
+	LSR 
+	STA JOYPAD1
+.loop:
+	LDA JOYPAD1
+	LSR 
+	ROL BUTTONSTATUS
+	BCC .loop
+ 	RTS
+
+;;;;; INTERRUPT HANDLERS
+
+NMIHandler:
+
+; store X and Y scroll position
+        lda ScrollPos	; A -> low byte
+        sta PPU_SCROLL	; set horiz scroll
+        lda #0		; A -> zero
+        sta PPU_SCROLL	; set vert scroll
+; store 8th bit into name table selector
+; name table A or B ($2000 or $2400)
+	lda ScrollPos+1	; load high byte
+        and #1		; select its low bit
+	ora #CTRL_NMI	; set rest of bits
+        sta PPU_CTRL
+      	lda #$02
+        sta OAM_DMA
+        
+        jsr ReadJoypad0
+        
+        jsr HandleInput
+        lda WordReturn ;put return value from HandleInput into argument bytes
+        sta ByteArg1
+        lda WordReturn+1
+        sta ByteArg2
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        
+        jsr MoveSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        jsr GetVectorToWalkTarget
+        lda WordReturn
+        sta ByteArg1
+        lda WordReturn+1
+        sta ByteArg2
+                
+       	jsr MoveSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        lda PlayerAnimation
+        sta ArgWord2
+        lda PlayerAnimation+1
+        sta ArgWord2+1
+        
+        jsr AnimateSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        lda #<PlayerMetaSpritePointers
+        sta ArgWord2
+        lda #>PlayerMetaSpritePointers
+        sta ArgWord2+1
+        
+        jsr SetMetaSpriteDirection
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        
+        lda #<CursorIdle
+        sta ArgWord2
+        lda #>CursorIdle
+        sta ArgWord2+1
+        
+        jsr AnimateSprites           
+        
+
+        inc NMICounterByte
+	rti		; return from interrupt
+
+;;;;; CONSTANT DATA
+	
+
+Palette:
+	.byte $0f,$2d,$10,$30,$0f,$0c,$14,$25,$0f,$09,$1a,$2a,$0f,$01,$2c,$3c
+	.byte $0f,$11,$21,$31,$0f,$2d,$10,$30,$0f,$2c,$06,$13,$0f,$09,$19,$2a
+
+
+testMap
+	incbin "CyberAdventureTest1.nam"
+        incbin "testMap1.nam"
+
+
+Cursor_Actor_Data: 
+	.byte #$04 ;number of bytes for data
+        .byte #$00 ;beginning of address in OAM RAM
+        .byte #$00 ;current animation frame
+        .byte #$30 ;current X position
+        .byte #$70 ;current Y position
+        .word Cursor_MetaSpriteData
+	.byte #DirectionRight
+        .byte $00 ;X vblank waits (movement speed below 1)
+        .byte $00 ;y vblank waits (movement speed below 1)
+        
+Cursor_MetaSpriteData:
+	.byte #$04
+	.byte -4,-4,$b0,1
+
+Player_Actor_Data: ;Label for the actor definition
+	.byte #$18 ;no longer used
+        .byte #$04 ;index of OAM where actor's sprites will live
+        .byte #$00 
+        .byte #$30         
+        .byte #$70 
+        .word PlayerRightMetaSpriteData ;pointer to current metasprite
+	.byte #DirectionRight
+        .byte $00 ;X vblank waits (movement speed below 1)
+        .byte $03 ;y vblank waits (movement speed below 1)
+        
+PlayerMetaSpritePointers:
+	.word PlayerRightMetaSpriteData
+        .word PlayerLeftMetaSpriteData
+
+PlayerRightMetaSpriteData:  
+	.byte #$18
+	.byte -10,-24,$ba,2 ;data format:
+	.byte - 2,-24,$bb,2 ;X, Y, Tile, Attribute
+	.byte -10,-16,$bc,2
+	.byte - 2,-16,$bd,2
+	.byte -10, -8,$be,2
+	.byte - 2, -8,$bf,2        
+        
+PlayerLeftMetaSpriteData: 
+	.byte #$18
+	.byte   2,-24,$ba,2|OAM_FLIP_H
+	.byte - 6,-24,$bb,2|OAM_FLIP_H
+	.byte   2,-16,$bc,2|OAM_FLIP_H
+	.byte - 6,-16,$bd,2|OAM_FLIP_H
+	.byte   2, -8,$be,2|OAM_FLIP_H
+	.byte - 6, -8,$bf,2|OAM_FLIP_H
+
+
+;AnimationData
+
+CursorIdle_0_Data:
+	.byte $b0
+CursorIdle_1_Data:
+	.byte $b1
+CursorIdle_2_Data:
+	.byte $b2
+CursorIdle_3_Data:
+	.byte $b3
+        
+CursorIdle:
+	.byte #$04
+        .byte #$10 ;number of vblanks per animation frame        
+        .word CursorIdle_0_Data
+        .word CursorIdle_1_Data
+        .word CursorIdle_2_Data     
+        .word CursorIdle_3_Data  
+        
+PlayerIdle_0_Data:
+	.byte $ba, $bb, $bc, $bd, $be, $bf
+        
+PlayerWalk_0_Data:
+	.byte $ca, $cb, $cc, $cd, $ce, $cf
+               
+PlayerWalk_1_Data:
+	.byte $da, $db, $dc, $dd, $de, $df
+	
+PlayerWalk_2_Data:
+	.byte $ea, $eb, $ec, $ed, $ee, $ef
+        
+PlayerIdle:
+	.byte #$01 ;numberOfFrames
+        .byte #$04 ;number of vblanks per animation frame
+	.word PlayerIdle_0_Data
+        
+PlayerWalk:
+	.byte #$04 ;numberOfFrames
+        .byte #$08 ;number of vblanks per animation frame        
+        .word PlayerWalk_0_Data
+        .word PlayerWalk_1_Data
+        .word PlayerWalk_0_Data
+        .word PlayerWalk_2_Data
+        
+;;;;; CPU VECTORS
+
+	NES_VECTORS
+
+;;;;; TILE SETS
+
+
+
+	org $10000
+        incbin "CyberAdventureTest1.chr"
+        incbin "CyberAdventureTest1.chr"
+
+
