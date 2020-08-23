@@ -1,44 +1,46 @@
 
 	include "nesdefs.dasm"
         ;include "nesppu.dasm"
-SpriteLength         = #$04
-ActorLength 	     = #$0a
+SpriteLength          = #$04
+ActorLength 	      = #$0a
 
+TextStringHeaderSize  = #$02
+TextStringVRAMAddress = #$00
 
-ActorHeaderSize      = #$08
+ActorHeaderSize       = #$08
 ;sprite header address offsets 
-ActorDataLength      = $00
-ActorOAMAddress      = $01
-ActorAnimationFrame  = $02
-ActorPositionX       = $03
-ActorPositionY       = $04
-ActorMetaSprite      = $05
-ActorHDirection      = $07
-ActorXVBlankWaits    = $08
-ActorYVBlankWaits    = $09
+ActorDataLength       = $00
+ActorOAMAddress       = $01
+ActorAnimationFrame   = $02
+ActorPositionX        = $03
+ActorPositionY        = $04
+ActorMetaSprite       = $05
+ActorHDirection       = $07
+ActorXVBlankWaits     = $08
+ActorYVBlankWaits     = $09
 
-AnimationDataLength  = #$00
-AnimationDataVBlanks = #$01
-AnimationHeaderSize  = #$02
+AnimationDataLength   = #$00
+AnimationDataVBlanks  = #$01
+AnimationHeaderSize   = #$02
 
-MetaSpriteDataLength = $00
-MetaSpriteHeaderSize = #$01
+MetaSpriteDataLength  = $00
+MetaSpriteHeaderSize  = #$01
 
-OAMSpriteY           = #$00
-OAMSpriteTile        = #$01
-OAMSpriteAttribute   = #$02
-OAMSpriteX           = #$03
-SkipScroll           = #$01
-ScrollForward        = #$00
-MaxXPosition         = #$e0
-MinXPosition         = #$18
-MaxYPosition         = #$c7
-MinYPosition         = #$14
-BounceY              = %00000010
-BounceX              = %00000001
-DirectionRight       = %00000000
-DirectionLeft        = %00000001
-MaxSpeed             = #$3a
+OAMSpriteY            = #$00
+OAMSpriteTile         = #$01
+OAMSpriteAttribute    = #$02
+OAMSpriteX            = #$03
+SkipScroll            = #$01
+ScrollForward         = #$00
+MaxXPosition          = #$e0
+MinXPosition          = #$18
+MaxYPosition          = #$c7
+MinYPosition          = #$14
+BounceY               = %00000010
+BounceX               = %00000001
+DirectionRight        = %00000000
+DirectionLeft         = %00000001
+MaxSpeed              = #$3a
 
 
 ;;;;; VARIABLES
@@ -170,8 +172,76 @@ Start:
         sta ScrollState
         
         
-.endless
-	jmp .endless	; endless loop
+.Main
+	jsr WaitSync
+        
+        jsr HandleInput
+        lda WordReturn ;put return value from HandleInput into argument bytes
+        sta ByteArg1
+        lda WordReturn+1
+        sta ByteArg2
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        
+        jsr MoveSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        jsr GetVectorToWalkTarget
+        lda WordReturn
+        sta ByteArg1
+        lda WordReturn+1
+        sta ByteArg2
+                
+       	jsr MoveSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        lda PlayerAnimation
+        sta ArgWord2
+        lda PlayerAnimation+1
+        sta ArgWord2+1
+        
+        jsr AnimateSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        
+        lda #<PlayerMetaSpritePointers
+        sta ArgWord2
+        lda #>PlayerMetaSpritePointers
+        sta ArgWord2+1
+        
+        jsr SetMetaSpriteDirection
+        
+        lda #<Cursor
+        sta ArgWord1
+        lda #>Cursor
+        sta ArgWord1+1
+        
+        lda #<CursorIdle
+        sta ArgWord2
+        lda #>CursorIdle
+        sta ArgWord2+1
+        
+        jsr AnimateSprites           
+        
+
+        inc NMICounterByte
+
+
+	jmp .Main	; endless loop
 ; set palette colors
 SetPalette: subroutine
 ; set PPU address to palette start
@@ -371,6 +441,25 @@ FillVRAM: subroutine
 	dex
 	bne .loop
         rts   
+        
+PutTiles: subroutine 
+	
+	ldy #TextStringVRAMAddress+1 ;need to set high byte first which is annoying
+        lda (ArgWord1),y
+        sta PPU_ADDR
+        ldy #TextStringVRAMAddress
+        lda (ArgWord1),y
+        sta PPU_ADDR
+
+        ldy #TextStringHeaderSize
+        
+.loop:  
+        lda (ArgWord1),y
+        sta PPU_DATA
+        iny
+        cmp #$00 ;text strings terminate with 0
+        bne .loop
+        rts
         
 HandleInput: subroutine
 	;returns a 2D vector. First byte is X, second byte is Y
@@ -773,98 +862,46 @@ ReadJoypad0: subroutine
 ;;;;; INTERRUPT HANDLERS
 
 NMIHandler:
-
+	SAVE_REGS
+        lda #$02
+        sta OAM_DMA
+        
+        lda #<TestMessage
+        sta ArgWord1
+        lda #>TestMessage
+        sta ArgWord1+1
+        
+        jsr PutTiles
+        
+   
 ; store X and Y scroll position
-        lda ScrollPos	; A -> low byte
+        lda #$00	; A -> low byte
         sta PPU_SCROLL	; set horiz scroll
-        lda #0		; A -> zero
+        lda #$00	; A -> zero
         sta PPU_SCROLL	; set vert scroll
 ; store 8th bit into name table selector
 ; name table A or B ($2000 or $2400)
-	lda ScrollPos+1	; load high byte
+
+	lda #$00	; load high byte
         and #1		; select its low bit
 	ora #CTRL_NMI	; set rest of bits
         sta PPU_CTRL
-      	lda #$02
-        sta OAM_DMA
+
         
         jsr ReadJoypad0
         
-        jsr HandleInput
-        lda WordReturn ;put return value from HandleInput into argument bytes
-        sta ByteArg1
-        lda WordReturn+1
-        sta ByteArg2
-        
-        lda #<Cursor
-        sta ArgWord1
-        lda #>Cursor
-        sta ArgWord1+1
-        
-        jsr MoveSprites
-        
-        lda #<Player
-        sta ArgWord1
-        lda #>Player
-        sta ArgWord1+1
-        
-        jsr GetVectorToWalkTarget
-        lda WordReturn
-        sta ByteArg1
-        lda WordReturn+1
-        sta ByteArg2
-                
-       	jsr MoveSprites
-        
-        lda #<Player
-        sta ArgWord1
-        lda #>Player
-        sta ArgWord1+1
-        
-        lda PlayerAnimation
-        sta ArgWord2
-        lda PlayerAnimation+1
-        sta ArgWord2+1
-        
-        jsr AnimateSprites
-        
-        lda #<Player
-        sta ArgWord1
-        lda #>Player
-        sta ArgWord1+1
-        
-        lda #<PlayerMetaSpritePointers
-        sta ArgWord2
-        lda #>PlayerMetaSpritePointers
-        sta ArgWord2+1
-        
-        jsr SetMetaSpriteDirection
-        
-        lda #<Cursor
-        sta ArgWord1
-        lda #>Cursor
-        sta ArgWord1+1
-        
-        lda #<CursorIdle
-        sta ArgWord2
-        lda #>CursorIdle
-        sta ArgWord2+1
-        
-        jsr AnimateSprites           
-        
 
-        inc NMICounterByte
+        RESTORE_REGS
 	rti		; return from interrupt
 
 ;;;;; CONSTANT DATA
 	
 
 Palette:
-	.byte $0f,$2d,$10,$30,$0f,$0c,$14,$25,$0f,$09,$1a,$2a,$0f,$01,$2c,$3c
-	.byte $0f,$11,$21,$31,$0f,$2d,$10,$30,$0f,$2c,$06,$13,$0f,$09,$19,$2a
+	.byte $0f,$00,$10,$30,$0f,$0c,$14,$25,$0f,$09,$1a,$2a,$0f,$01,$2c,$3c
+	.byte $0f,$11,$21,$31,$0f,$00,$10,$30,$0f,$2c,$06,$13,$0f,$09,$19,$2a
 
-
-testMap
+testMap:
 	incbin "CyberAdventureTest1.nam"
         incbin "testMap1.nam"
 
@@ -962,16 +999,20 @@ PlayerWalk:
         .word PlayerWalk_0_Data
         .word PlayerWalk_2_Data
         
+TestMessage:
+	.word $2222
+	.byte "Abc Bcd Cde Def Efg Fgh Ghi",#$00
+        
 ;;;;; CPU VECTORS
 
 	NES_VECTORS
 
 ;;;;; TILE SETS
 
-
-
 	org $10000
         incbin "CyberAdventureTest1.chr"
         incbin "CyberAdventureTest1.chr"
+        
+
 
 
