@@ -899,7 +899,7 @@ NMIHandler:
 
 Palette	
 	.byte $0f,$04,$14,$30,$0f,$17,$27,$38,$0f,$01,$3c,$2c,$0f,$0a,$2a,$28
-	.byte $0f,$11,$21,$31,$0f,$00,$10,$30,$0f,$2c,$06,$2d,$0f,$09,$19,$2a
+	.byte $0f,$11,$21,$31,$0f,$00,$10,$30,$0f,$2c,$06,$0f,$0f,$09,$19,$2a
 
 testMap:
 	incbin "CyberAdventureTest2.nam"
@@ -1010,7 +1010,7 @@ TestMessage:
 ;;;;; TILE SETS
 
 	org $10000
-        incbin "CyberAdventureTest2.chr"
+        incbin "CyberAdventureTest3.chr"
         incbin "CyberAdventureTest1.chr"
         
 
