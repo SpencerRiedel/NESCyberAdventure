@@ -617,7 +617,7 @@ MoveSprites: subroutine
         
 	lda #$00
         
-	ldx #MetaSpriteHeaderSize
+
         lda #<OAM_RAM
         ldy #ActorOAMAddress 
 	clc
@@ -629,10 +629,12 @@ MoveSprites: subroutine
 
         
         ldy #MetaSpriteDataLength
-        lda (ArgWord1),y ;add the length of the sprite to the counter
+        lda (ArgWord1),y ;get the size of the metasprite
         clc
         adc TempWord ;add the address of the sprite to the counter
-        sta TempByte ;tracks length of metapsrite  
+        sta TempByte ;TempByte now has the address that is one location beyond where the metasprite lives in OAM 
+                     ;When the code below iterates through the metapsprite tiles, it will use this address to determine
+                     ;when to break
  
 
  	
@@ -708,9 +710,12 @@ MoveSprites: subroutine
 	sta (ArgWord1),y
 .doneCheckingYWait   
         
+	ldx #MetaSpriteHeaderSize; set X to the Metasprite header size so that we can start looking at the metasprite data and not the header        
+        
 .nextSprite:
-	txa
-        tay
+	txa;we need to put X into Y to use the desired addressing mode,
+        tay;but we also want that value to remain in X so we can use it later
+        
         lda (TempWord2),y ;at this point, A has desired X position of sprite tile
         
         ldy #ActorPositionX ;target position for whole metasprite gets added
@@ -760,8 +765,8 @@ AnimateSprites: subroutine
         lda (ArgWord1),y ;add the length of the sprite to the counter
         clc
         adc TempWord ;add the address of the sprite to the counter
-        sta TempByte ;tracks length of metapsrite           
-	
+        sta TempByte ;tracks length of metapsrite -- OAM address of metasprite plus number of metapsprite tiles         
+	  
         ;jmp .done
         
         
@@ -770,8 +775,8 @@ AnimateSprites: subroutine
 	
         ldy #AnimationDataLength
         cmp (ArgWord2),y; compare to animation length
-        bcc .skipAnimWrap
-        lda #$00
+        bcc .skipAnimWrap; if we are not "wrapping around" to the beginning animation frame, advance the animation frame counter
+        lda #$00;if the above branching operation didn't take place, we will reset the animation frame counter and loop the animation
         ldy #ActorAnimationFrame   
         sta (ArgWord1),y
 .skipAnimWrap
@@ -779,7 +784,7 @@ AnimateSprites: subroutine
         ldy #ActorAnimationFrame
 	lda (ArgWord1),y
 	sta ByteArg1
-	jsr GetAnimationFrameByIndex
+	jsr GetAnimationFrameByIndex; WordReturn: address of animation data for current frame
         	
 	ldx #00
 .nextSprite:     
@@ -787,7 +792,7 @@ AnimateSprites: subroutine
         txa
         inx
         tay
-        lda (WordReturn),y
+        lda (WordReturn),y; animation frame data for the current tile of the metasprite
 
 
         
@@ -833,11 +838,11 @@ GetAnimationFrameByIndex: subroutine
         
         lda ByteArg1
         clc
-        asl
-        adc #AnimationHeaderSize
+        asl; before getting the current animation frame, double the frame index in the accumulator because each animation frame is a Word and uses two addresses
+        adc #AnimationHeaderSize; add the header size so we are looking within the animations and not trying to load the header
         tay
         lda (ArgWord2),y
-       	sta WordReturn
+       	sta WordReturn;return the address of the animation data for the current frame
         iny
         lda (ArgWord2),y
         sta WordReturn+1        
