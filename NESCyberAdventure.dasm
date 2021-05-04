@@ -7,18 +7,6 @@ ActorLength 	      = #$0a
 TextStringHeaderSize  = #$02
 TextStringVRAMAddress = #$00
 
-ActorHeaderSize       = #$08
-;sprite header address offsets 
-ActorDataLength       = $00
-ActorOAMAddress       = $01
-ActorAnimationFrame   = $02
-ActorPositionX        = $03
-ActorPositionY        = $04
-ActorMetaSprite       = $05
-ActorHDirection       = $07
-ActorXVBlankWaits     = $08
-ActorYVBlankWaits     = $09
-
 AnimationDataLength   = #$00
 AnimationDataVBlanks  = #$01
 AnimationHeaderSize   = #$02
@@ -49,12 +37,11 @@ MaxSpeed              = #$3a
 	org $0
 NMICounterByte	    .byte
 BUTTONSTATUS	    .byte
-WalkTargetX         .byte
-WalkTargetY         .byte
 ScrollState         .byte
 ScrollPos	    .word
 TempWord            .word
 TempWord2           .word
+TempWord3	    .word
 TempByte            .byte
 TempByte2           .byte
 ByteArg1            .byte
@@ -62,12 +49,41 @@ ByteArg2            .byte
 ArgWord1            .Word
 ArgWord2            .Word
 WordReturn          .word
+WalkTarget          .word
 PlayerAnim          .word
 PlayerAnimFrame     .byte
 PlayerDirection     .byte
 LastPlayerDirection .byte
 PlayerTileSet       .word
 PlayerAnimation     .word
+
+
+;Actor class 
+;Header:
+ActorHeaderSize       = #$0A
+;sprite header address offsets 
+ActorDataLength       = $00
+ActorOAMAddress       = $01
+ActorAnimationFrame   = $02
+ActorPositionX        = $03
+ActorPositionY        = $04
+ActorMetaSprite       = $05
+ActorHDirection       = $07
+ActorXVBlankWaits     = $08
+ActorYVBlankWaits     = $09
+;
+;Definition:
+;
+;Name:
+;       .byte ;#$04 ;number of bytes for data
+;       .byte ;#$00 ;beginning of address in OAM RAM
+;       .byte ;#$00 ;current animation frame
+;       .byte ;CursorXPosition ;current X position
+;       .byte ;CursorYPosition ;current Y position
+;       .word ;Cursor_MetaSpriteData
+;	.byte ;#DirectionRight
+;       .byte ;$00 ;X vblank waits (movement speed below 1)
+;       .byte ;$00 ;y vblank waits (movement speed below 1)
 
 Cursor: 
 	.byte ;#$04 ;number of bytes for data
@@ -89,7 +105,7 @@ Player: ;Label for the actor definition
         .word; PlayerRightMetaSpriteData ;pointer to current metasprite
 	.byte; #DirectionRight
         .byte; $00 ;X vblank waits (movement speed below 1)
-        .byte; $03 ;y vblank waits (movement speed below 1)
+        .byte; $03 ;y vblank waits (movement speed below 1)        
 
 ;;;;; NES CARTRIDGE HEADER
 
@@ -122,7 +138,7 @@ Start:
         sta ArgWord2+1
         
        	;jmp .testSkip
-        jsr InitSprites
+        jsr InitActor
           
         lda PlayerIdle
         sta PlayerAnimation
@@ -140,20 +156,20 @@ Start:
         lda #>Player
 	sta ArgWord1+1
         
-	jsr InitSprites
+	jsr InitActor
         
         lda #<Cursor
         sta ArgWord1
         lda #>Cursor
         sta ArgWord1+1
-        jsr GetSpriteLocation
+        jsr GetActorLocation
         lda WordReturn
 	;adc -#$06
-        sta WalkTargetX
+        sta WalkTarget
         lda WordReturn+1
         clc
         ;adc -#$14
-        sta WalkTargetY
+        sta WalkTarget+1
         
 ;.testSkip
         
@@ -186,20 +202,89 @@ Start:
         lda #>Cursor
         sta ArgWord1+1
         
-        jsr MoveSprites
+        jsr MoveActor
         
         lda #<Player
         sta ArgWord1
         lda #>Player
         sta ArgWord1+1
+        jsr GetActorLocation
+        lda WordReturn
+        sta ArgWord1
+        lda WordReturn+1
+        sta ArgWord1+1
         
-        jsr GetVectorToWalkTarget
+        lda WalkTarget
+        sta ArgWord2
+        lda WalkTarget+1
+        sta ArgWord2+1
+        
+        jsr VectorMoveTowardsVector
+        
+        ;set player animation based on movement vector
+        lda WordReturn
+        ora WordReturn+1
+        bne .walking
+        lda #<PlayerIdle
+        sta PlayerAnimation
+        lda #>PlayerIdle
+        sta PlayerAnimation+1
+        jmp .animationDone
+.walking
+	lda #<PlayerWalk
+        sta PlayerAnimation
+        lda #>PlayerWalk
+        sta PlayerAnimation+1
+.animationDone     
+
+	lda WordReturn
+        sta TempWord
+        lda WordReturn+1
+        sta TempWord+1
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1
+        jsr GetActorLocation
+        
+        lda WordReturn
+        sta TempWord2
+        lda WordReturn+1
+        sta TempWord2+1
+        
+        lda TempWord
+        sta WordReturn
+        lda TempWord+1
+        sta WordReturn+1
+        
+        lda TempWord2
+        clc
+        cmp WalkTarget
+        beq .directionDone
+        bcc .XisLess
+
+        ldy #ActorHDirection
+        lda #DirectionRight
+        sta Player,y
+        jmp .directionDone      
+.XisLess
+        ldy #ActorHDirection
+        lda #DirectionLeft
+        sta Player,y
+.directionDone
+        
+        
         lda WordReturn
         sta ByteArg1
         lda WordReturn+1
         sta ByteArg2
-                
-       	jsr MoveSprites
+        
+        lda #<Player
+        sta ArgWord1
+        lda #>Player
+        sta ArgWord1+1                
+       	jsr MoveActor
         
         lda #<Player
         sta ArgWord1
@@ -255,7 +340,7 @@ SetPalette: subroutine
 	bne .loop	; not yet, loop
         rts		; return to caller     
         
-InitSprites: subroutine
+InitActor: subroutine
 	;lda ;ArgWord1 ;sprite pointer set before calling
         ;lda ;ArgWord1+1
         ;argword2 - pointer to actor's data in rom
@@ -477,14 +562,15 @@ HandleInput: subroutine
         sta ArgWord1
         lda #>Cursor
         sta ArgWord1+1
-        jsr GetSpriteLocation
+        jsr GetActorLocation
+        
         lda WordReturn
 	;adc -#$06
-        sta WalkTargetX
+        sta WalkTarget
         lda WordReturn+1
         clc
         ;adc -#$14
-        sta WalkTargetY
+        sta WalkTarget+1
         lda #$00
         sta WordReturn
         sta WordReturn+1 ;clear return variable 
@@ -524,36 +610,84 @@ HandleInput: subroutine
 .done	
 	rts
 
-GetVectorToWalkTarget: subroutine
-	;ArgWord1 - a sprite pointer
-        ;WordReturn - a 2D vector that moves the sprite towards the target
-        ;argword should automaticaly get passed down
-          
-	jsr GetSpriteLocation
+VectorMoveTowardsVector: subroutine
+	;ArgWord1 - the starting position 
+        ;ArgWord2 - the point to move towards
+        ;WordReturn - a 2D vector that moves the position towards the target
+	;
         
         lda #$00
         sta TempWord
         sta TempWord+1
         
-        lda WordReturn
-        cmp WalkTargetX
+        lda ArgWord1
+        cmp ArgWord2
         beq .checkY
         bcc .XisLess
         lda -#$01
         sta TempWord
-        ldy #ActorHDirection
-        lda #DirectionRight
-        sta (ArgWord1),y
         jmp .checkY       
 .XisLess
         lda #$01
         sta TempWord
-        ldy #ActorHDirection
-        lda #DirectionLeft
-        sta (ArgWord1),y
 .checkY
-	lda WordReturn+1
-        cmp WalkTargetY
+	lda ArgWord1+1
+        cmp ArgWord2+1
+        beq .doneSettingVector
+        bcc .YisLess
+        lda -#$01
+        sta TempWord+1
+        jmp .doneSettingVector
+.YisLess
+	lda #$01
+        sta TempWord+1
+.doneSettingVector
+
+	lda TempWord
+	sta WordReturn
+        lda TempWord+1
+        sta WordReturn+1
+	rts 
+        
+VectorMoveTowardsActor: subroutine
+	;ArgWord1 - an actor pointer
+        ;WordReturn - a 2D vector that moves the sprite towards the target
+        ;argword should automaticaly get passed down
+          
+	jsr GetActorLocation
+        lda WordReturn
+        sta TempWord2
+        lda WordReturn+1
+        sta TempWord2+1
+        
+        lda ArgWord1
+        sta TempWord3
+        lda ArgWord1+1
+        sta TempWord3+1
+        
+        lda ArgWord2
+        sta ArgWord1
+        lda ArgWord2+1
+        sta ArgWord1+1
+        jsr GetActorLocation
+        
+        lda #$00
+        sta TempWord
+        sta TempWord+1
+        
+        lda TempWord2
+        cmp WordReturn
+        beq .checkY
+        bcc .XisLess
+        lda -#$01
+        sta TempWord
+        jmp .checkY       
+.XisLess
+        lda #$01
+        sta TempWord
+.checkY
+	lda TempWord2+1
+        cmp WordReturn+1
         beq .doneSettingVector
         bcc .YisLess
         lda -#$01
@@ -569,28 +703,14 @@ GetVectorToWalkTarget: subroutine
         lda TempWord+1
         sta WordReturn+1
         
-        lda WordReturn
-        ora WordReturn+1
-        bne .walking
-        lda #<PlayerIdle
-        sta PlayerAnimation
-        lda #>PlayerIdle
-        sta PlayerAnimation+1
-        jmp .done
-.walking
-	lda #<PlayerWalk
-        sta PlayerAnimation
-        lda #>PlayerWalk
-        sta PlayerAnimation+1
-.done        
+   
 	rts
 
-GetSpriteLocation: subroutine
-	;ArgWord1 - Sprite pointer
-	;returns a 2D vector of a sprite's location. Low byte is X, high byte is Y
+GetActorLocation: subroutine
+	;ArgWord1 - Actor pointer
+	;returns a 2D vector of an Actor's location. Low byte is X, high byte is Y
         
-        ldx #ActorHeaderSize        
-        ldy #ActorOAMAddress 
+        ldx #ActorHeaderSize         
         
         ldy #ActorPositionX
         lda (ArgWord1),y
@@ -602,9 +722,9 @@ GetSpriteLocation: subroutine
        
         rts
         
-MoveSprites: subroutine
+MoveActor: subroutine
 	;rts ;test
-	;ArgWord1 - Sprite pointer
+	;ArgWord1 - Actor pointer
         ;ByteArg1 - X delta
         ;ByteArg2 - Y delta
         
@@ -909,8 +1029,7 @@ Palette
 testMap:
 	incbin "CyberAdventureTest2.nam"
         incbin "testMap1.nam"
-
-
+      
 Cursor_Actor_Data: 
 	.byte #$04 ;number of bytes for data
         .byte #$00 ;beginning of address in OAM RAM
